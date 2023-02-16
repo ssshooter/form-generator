@@ -70,10 +70,10 @@
           >
             <draggable class="drawing-board" :list="drawingList" :animation="340" group="componentsGroup">
               <draggable-item
-                v-for="(element, index) in drawingList"
-                :key="element.renderKey"
+                v-for="(item, index) in drawingList"
+                :key="item.renderKey"
                 :drawing-list="drawingList"
-                :element="element"
+                :current-item="item"
                 :index="index"
                 :active-id="activeId"
                 :form-conf="formConf"
@@ -95,6 +95,7 @@
       :form-conf="formConf"
       :show-field="!!drawingList.length"
       @tag-change="tagChange"
+      @fetch-data="fetchData"
     />
 
     <form-drawer
@@ -132,7 +133,7 @@ import {
   inputComponents, selectComponents, layoutComponents, formConf
 } from '@/components/generator/config'
 import {
-  exportDefault, beautifierConf, isNumberStr, titleCase, deepClone
+  exportDefault, beautifierConf, isNumberStr, titleCase, deepClone, isObjectObject
 } from '@/utils/index'
 import {
   makeUpHtml, vueTemplate, vueScript, cssStyle
@@ -266,18 +267,64 @@ export default {
     })
   },
   methods: {
-    activeFormItem(element) {
-      this.activeData = element
-      this.activeId = element.__config__.formId
+    setObjectValueReduce(obj, strKeys, data) {
+      const arr = strKeys.split('.')
+      arr.reduce((pre, item, i) => {
+        if (arr.length === i + 1) {
+          pre[item] = data
+        } else if (!isObjectObject(pre[item])) {
+          pre[item] = {}
+        }
+        return pre[item]
+      }, obj)
+    },
+    setRespData(component, resp) {
+      const { dataPath, renderKey, dataConsumer } = component.__config__
+      if (!dataPath || !dataConsumer) return
+      const respData = dataPath.split('.').reduce((pre, item) => pre[item], resp)
+
+      // 将请求回来的数据，赋值到指定属性。
+      // 以el-tabel为例，根据Element文档，应该将数据赋值给el-tabel的data属性，所以dataConsumer的值应为'data';
+      // 此时赋值代码可写成 component[dataConsumer] = respData；
+      // 但为支持更深层级的赋值（如：dataConsumer的值为'options.data'）,使用setObjectValueReduce
+      this.setObjectValueReduce(component, dataConsumer, respData)
+      const i = this.drawingList.findIndex(item => item.__config__.renderKey === renderKey)
+      if (i > -1) this.$set(this.drawingList, i, component)
+    },
+    fetchData(component) {
+      const { dataType, method, url } = component.__config__
+      if (dataType === 'dynamic' && method && url) {
+        this.setLoading(component, true)
+        this.$axios({
+          method,
+          url
+        }).then(resp => {
+          this.setLoading(component, false)
+          this.setRespData(component, resp.data)
+        })
+      }
+    },
+    setLoading(component, val) {
+      const { directives } = component
+      if (Array.isArray(directives)) {
+        const t = directives.find(d => d.name === 'loading')
+        if (t) t.value = val
+      }
+    },
+    activeFormItem(currentItem) {
+      this.activeData = currentItem
+      this.activeId = currentItem.__config__.formId
     },
     onEnd(obj) {
       if (obj.from !== obj.to) {
+        this.fetchData(tempActiveData)
         this.activeData = tempActiveData
         this.activeId = this.idGlobal
       }
     },
     addComponent(item) {
       const clone = this.cloneComponent(item)
+      this.fetchData(clone)
       this.drawingList.push(clone)
       this.activeFormItem(clone)
     },
@@ -293,7 +340,7 @@ export default {
     createIdAndKey(item) {
       const config = item.__config__
       config.formId = ++this.idGlobal
-      config.renderKey = +new Date() // 改变renderKey后可以实现强制更新组件
+      config.renderKey = `${config.formId}${+new Date()}` // 改变renderKey后可以实现强制更新组件
       if (config.layout === 'colFormItem') {
         item.__vModel__ = `field${this.idGlobal}`
       } else if (config.layout === 'rowFormItem') {
@@ -337,14 +384,14 @@ export default {
         }
       )
     },
-    drawingItemCopy(item, parent) {
+    drawingItemCopy(item, list) {
       let clone = deepClone(item)
       clone = this.createIdAndKey(clone)
-      parent.push(clone)
+      list.push(clone)
       this.activeFormItem(clone)
     },
-    drawingItemDelete(index, parent) {
-      parent.splice(index, 1)
+    drawingItemDelete(index, list) {
+      list.splice(index, 1)
       this.$nextTick(() => {
         const len = this.drawingList.length
         if (len) {
